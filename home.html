@@ -1,0 +1,2044 @@
+import React, { useState, useEffect, createContext, useContext } from 'react';
+
+// Currency Constant (now a default, can be updated by user)
+const DEFAULT_TZS_PER_LITER = 3000; // 1 liter = TZS 3000
+
+// Define approximate Km/L based on Engine CC (simplified model)
+const getKmPerLiterByCC = (engineCC) => {
+    if (!engineCC) return 0;
+    if (engineCC <= 1000) return 18; // e.g., small city cars
+    if (engineCC <= 1500) return 15; // e.g., compact sedans
+    if (engineCC <= 2000) return 12; // e.g., mid-size sedans/small SUVs
+    return 10; // e.g., larger engines/SUVs
+};
+
+// Create a context for App data
+const AppContext = createContext(null);
+
+// Utility function to get start/end dates for periods
+const getPeriodDates = (period, customStartDate, customEndDate) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Normalize to start of day
+
+    let startDate, endDate;
+
+    switch (period) {
+        case 'day':
+            startDate = new Date(today);
+            endDate = new Date(today);
+            endDate.setDate(endDate.getDate() + 1); // End of today
+            break;
+        case 'week':
+            startDate = new Date(today);
+            startDate.setDate(today.getDate() - today.getDay()); // Start of current week (Sunday)
+            endDate = new Date(startDate);
+            endDate.setDate(endDate.getDate() + 7); // End of current week
+            break;
+        case 'month':
+            startDate = new Date(today.getFullYear(), today.getMonth(), 1); // Start of current month
+            endDate = new Date(today.getFullYear(), today.getMonth() + 1, 0); // End of current month
+            endDate.setDate(endDate.getDate() + 1); // End of current month + 1 day for query
+            break;
+        case 'custom':
+            startDate = customStartDate ? new Date(customStartDate) : null;
+            endDate = customEndDate ? new Date(customEndDate) : null;
+            if (endDate) {
+                endDate.setDate(endDate.getDate() + 1); // Include the end date fully
+            }
+            break;
+        default: // All time
+            startDate = null;
+            endDate = null;
+            break;
+    }
+    return { startDate, endDate };
+};
+
+// Utility function to generate a random ID
+const generateRandomId = () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+
+// Main App Component
+const App = () => {
+    const [currentPage, setCurrentPage] = useState('dashboard');
+    const [userId, setUserId] = useState(localStorage.getItem('localUserId') || generateRandomId());
+    const [userDisplayName, setUserDisplayName] = useState('Local User');
+    const [vehicles, setVehicles] = useState([]);
+    const [fuelLogs, setFuelLogs] = useState([]);
+    const [maintenanceLogs, setMaintenanceLogs] = useState([]);
+    const [expenses, setExpenses] = useState([]);
+    const [selectedVehicle, setSelectedVehicle] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [selectedPeriod, setSelectedPeriod] = useState('month'); // New state for period filter
+    const [customStartDate, setCustomStartDate] = useState('');
+    const [customEndDate, setCustomEndDate] = useState('');
+    const [tzsPerLiter, setTzsPerLiter] = useState(DEFAULT_TZS_PER_LITER); // State for fuel price
+
+    // Save userId to localStorage on initial load
+    useEffect(() => {
+        if (!localStorage.getItem('localUserId')) {
+            localStorage.setItem('localUserId', userId);
+        }
+        setLoading(false); // No async Firebase init, so set loading to false immediately
+    }, []);
+
+    // Load data from localStorage on component mount
+    useEffect(() => {
+        const loadData = (key, setState) => {
+            try {
+                const data = localStorage.getItem(`${userId}_${key}`);
+                setState(data ? JSON.parse(data) : []);
+            } catch (e) {
+                console.error(`Error loading ${key} from localStorage:`, e);
+                setState([]);
+            }
+        };
+
+        loadData('vehicles', setVehicles);
+        loadData('fuelLogs', setFuelLogs);
+        loadData('maintenanceLogs', setMaintenanceLogs);
+        loadData('expenses', setExpenses);
+    }, [userId]); // Reload if userId changes (e.g., after a "sign out" and new local user)
+
+    // Save data to localStorage whenever it changes
+    useEffect(() => {
+        localStorage.setItem(`${userId}_vehicles`, JSON.stringify(vehicles));
+    }, [vehicles, userId]);
+
+    useEffect(() => {
+        localStorage.setItem(`${userId}_fuelLogs`, JSON.stringify(fuelLogs));
+    }, [fuelLogs, userId]);
+
+    useEffect(() => {
+        localStorage.setItem(`${userId}_maintenanceLogs`, JSON.stringify(maintenanceLogs));
+    }, [maintenanceLogs, userId]);
+
+    useEffect(() => {
+        localStorage.setItem(`${userId}_expenses`, JSON.stringify(expenses));
+    }, [expenses, userId]);
+
+
+    // Local Storage CRUD Operations
+    const addDocument = async (collectionName, data) => {
+        const currentData = JSON.parse(localStorage.getItem(`${userId}_${collectionName}`) || '[]');
+        const newDoc = { id: generateRandomId(), ...data };
+        const updatedData = [...currentData, newDoc];
+        localStorage.setItem(`${userId}_${collectionName}`, JSON.stringify(updatedData));
+        // Manually update state to trigger re-render
+        if (collectionName === 'vehicles') setVehicles(updatedData);
+        if (collectionName === 'fuelLogs') setFuelLogs(updatedData);
+        if (collectionName === 'maintenanceLogs') setMaintenanceLogs(updatedData);
+        if (collectionName === 'expenses') setExpenses(updatedData);
+        return newDoc.id;
+    };
+
+    const updateDocument = async (collectionName, id, data) => {
+        const currentData = JSON.parse(localStorage.getItem(`${userId}_${collectionName}`) || '[]');
+        const updatedData = currentData.map(doc =>
+            doc.id === id ? { ...doc, ...data } : doc
+        );
+        localStorage.setItem(`${userId}_${collectionName}`, JSON.stringify(updatedData));
+        // Manually update state to trigger re-render
+        if (collectionName === 'vehicles') setVehicles(updatedData);
+        if (collectionName === 'fuelLogs') setFuelLogs(updatedData);
+        if (collectionName === 'maintenanceLogs') setMaintenanceLogs(updatedData);
+        if (collectionName === 'expenses') setExpenses(updatedData);
+        return true;
+    };
+
+    const deleteDocument = async (collectionName, id) => {
+        const currentData = JSON.parse(localStorage.getItem(`${userId}_${collectionName}`) || '[]');
+        const updatedData = currentData.filter(doc => doc.id !== id);
+        localStorage.setItem(`${userId}_${collectionName}`, JSON.stringify(updatedData));
+        // Manually update state to trigger re-render
+        if (collectionName === 'vehicles') setVehicles(updatedData);
+        if (collectionName === 'fuelLogs') setFuelLogs(updatedData);
+        if (collectionName === 'maintenanceLogs') setMaintenanceLogs(updatedData);
+        if (collectionName === 'expenses') setExpenses(updatedData);
+        return true;
+    };
+
+    const handleSignOut = () => {
+        // Clear current user's data from localStorage and generate a new user ID
+        localStorage.removeItem('localUserId'); // Remove the current user's ID
+        // Note: Data for previous local user IDs will remain in localStorage unless explicitly cleared.
+        // For a true "sign out" in local storage, you might clear all user-specific data keys.
+        // For this demo, we'll just generate a new ID and effectively start fresh for the "new" local user.
+        setUserId(generateRandomId());
+        setUserDisplayName('Local User');
+        setVehicles([]);
+        setFuelLogs([]);
+        setMaintenanceLogs([]);
+        setExpenses([]);
+        setSelectedVehicle(null);
+        setCurrentPage('dashboard');
+    };
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+                <div className="text-2xl font-semibold">Loading AutoPilot...</div>
+            </div>
+        );
+    }
+
+    return (
+        <AppContext.Provider value={{
+            userId, vehicles, setVehicles, fuelLogs, setFuelLogs, maintenanceLogs, setMaintenanceLogs, expenses, setExpenses,
+            addDocument, updateDocument, deleteDocument, selectedVehicle, setSelectedVehicle, userDisplayName,
+            selectedPeriod, setSelectedPeriod, customStartDate, setCustomStartDate, customEndDate, setCustomEndDate,
+            tzsPerLiter, setTzsPerLiter, setError // Provide tzsPerLiter and its setter
+        }}>
+            <div className="min-h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-inter flex flex-col">
+                <Header currentPage={currentPage} setCurrentPage={setCurrentPage} handleSignOut={handleSignOut} />
+                {error && <ErrorMessage message={error} onClose={() => setError(null)} />}
+                <main className="container mx-auto p-4 sm:p-6 lg:p-8 flex-grow">
+                    {currentPage === 'dashboard' && <Dashboard />}
+                    {currentPage === 'my-garage' && <MyGarage />}
+                    {currentPage === 'fuel-log' && <FuelLog />}
+                    {currentPage === 'maintenance' && <Maintenance />}
+                    {currentPage === 'expenses' && <Expenses />}
+                    {currentPage === 'user-profile' && <UserProfile />}
+                    {currentPage === 'alerts' && <Alerts />}
+                </main>
+                <Footer />
+            </div>
+        </AppContext.Provider>
+    );
+};
+
+// Header Component
+const Header = ({ currentPage, setCurrentPage, handleSignOut }) => {
+    const { userDisplayName, userId } = useContext(AppContext);
+
+    const navItems = [
+        { name: 'Dashboard', page: 'dashboard' },
+        { name: 'My Garage', page: 'my-garage' },
+        { name: 'Fuel Log', page: 'fuel-log' },
+        { name: 'Maintenance', page: 'maintenance' },
+        { name: 'Expenses', page: 'expenses' },
+        { name: 'Alerts', page: 'alerts' }, // New navigation item
+        { name: 'Profile', page: 'user-profile' },
+    ];
+
+    return (
+        <header className="bg-gradient-to-r from-blue-600 to-purple-700 text-white shadow-lg rounded-b-lg p-4">
+            <div className="container mx-auto flex flex-col sm:flex-row items-center justify-between">
+                <div className="flex items-center mb-4 sm:mb-0">
+                    <CarIcon className="w-8 h-8 mr-3 text-white" />
+                    <h1 className="text-3xl font-bold">AutoPilot</h1>
+                </div>
+                <nav className="flex flex-wrap justify-center sm:justify-end gap-2 sm:gap-4">
+                    {navItems.map(item => (
+                        <button
+                            key={item.page}
+                            onClick={() => setCurrentPage(item.page)}
+                            className={`px-4 py-2 rounded-full transition-all duration-300
+                                ${currentPage === item.page ? 'bg-white text-blue-700 shadow-md' : 'text-white hover:bg-white hover:text-blue-700 hover:shadow-md'}`}
+                        >
+                            {item.name}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+            <div className="container mx-auto mt-4 text-sm text-center sm:text-right">
+                <span className="mr-2">Welcome, {userDisplayName}!</span>
+                <span className="font-mono text-xs opacity-80">User ID: {userId}</span>
+                <button
+                    onClick={handleSignOut}
+                    className="ml-4 px-3 py-1 bg-red-500 hover:bg-red-600 rounded-full text-white text-xs transition-colors duration-200"
+                >
+                    Sign Out (Local)
+                </button>
+            </div>
+        </header>
+    );
+};
+
+// Error Message Component
+const ErrorMessage = ({ message, onClose }) => {
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-red-600 text-white p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+                <h3 className="text-xl font-bold mb-4">Error!</h3>
+                <p className="mb-6">{message}</p>
+                <button
+                    onClick={onClose}
+                    className="px-6 py-2 bg-white text-red-600 rounded-full font-semibold hover:bg-gray-200 transition-colors duration-200"
+                >
+                    Dismiss
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// Dashboard Component
+const Dashboard = () => {
+    const { vehicles, fuelLogs, maintenanceLogs, expenses, setSelectedVehicle, setCurrentPage, selectedPeriod, setSelectedPeriod, customStartDate, setCustomStartDate, customEndDate, setCustomEndDate, tzsPerLiter, setTzsPerLiter, setError } = useContext(AppContext);
+
+    const { startDate, endDate } = getPeriodDates(selectedPeriod, customStartDate, customEndDate);
+
+    // Fuel Calculator states
+    const [tzsAmount, setTzsAmount] = useState('');
+    const [estimatedLiters, setEstimatedLiters] = useState(0);
+    const [estimatedKm, setEstimatedKm] = useState(0);
+    const [calcSelectedVehicle, setCalcSelectedVehicle] = useState(null); // Vehicle selected for calculator
+
+    // Filter logs based on selected period
+    const filterLogsByPeriod = (logs) => {
+        if (!startDate || !endDate) return logs; // No filter if 'All Time' or custom dates not set
+        return logs.filter(log => {
+            const logDate = new Date(log.date);
+            return logDate >= startDate && logDate < endDate;
+        });
+    };
+
+    const filteredFuelLogs = filterLogsByPeriod(fuelLogs);
+    const filteredMaintenanceLogs = filterLogsByPeriod(maintenanceLogs);
+    const filteredExpenses = filterLogsByPeriod(expenses);
+
+    // Calculate next service due (still for all vehicles, but could be filtered by selected vehicle if added)
+    const getNextService = () => {
+        let nextService = null;
+        vehicles.forEach(vehicle => {
+            const vehicleMaintenance = maintenanceLogs.filter(log => log.vehicleId === vehicle.id);
+            const sortedMaintenance = vehicleMaintenance.sort((a, b) => new Date(a.date) - new Date(b.date));
+            const lastOilChange = sortedMaintenance.findLast(log => log.type === 'Engine Oil Change'); // Use specific type
+            // Simple logic: if last oil change was more than 6 months ago or 5000km ago (example)
+            if (lastOilChange) {
+                const sixMonthsAgo = new Date();
+                sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+                if (new Date(lastOilChange.date) < sixMonthsAgo || (vehicle.currentOdometer && lastOilChange.odometer && (vehicle.currentOdometer - lastOilChange.odometer > 5000))) {
+                    if (!nextService || new Date(lastOilChange.date) < new Date(nextService.date)) {
+                        nextService = { ...lastOilChange, vehicleName: vehicle.make + ' ' + vehicle.model, type: 'Engine Oil Change' };
+                    }
+                }
+            }
+            // Add other maintenance checks
+            const overdueTasks = vehicleMaintenance.filter(task => new Date(task.nextDueDate) < new Date() && task.status !== 'Completed');
+            if (overdueTasks.length > 0) {
+                const earliestOverdue = overdueTasks.sort((a, b) => new Date(a.nextDueDate) - new Date(b.nextDueDate))[0];
+                if (!nextService || (earliestOverdue.nextDueDate && new Date(earliestOverdue.nextDueDate) < new Date(nextService.date))) {
+                    nextService = { ...earliestOverdue, vehicleName: vehicle.make + ' ' + vehicle.model, type: earliestOverdue.type };
+                }
+            }
+        });
+        return nextService;
+    };
+
+    const nextService = getNextService();
+
+    // Calculate total fuel costs for the filtered period
+    const totalFuelCosts = filteredFuelLogs.reduce((sum, log) => sum + parseFloat(log.cost || 0), 0);
+
+    // Calculate total expenses for the filtered period
+    const totalExpenses = filteredExpenses.reduce((sum, log) => sum + parseFloat(log.amount || 0), 0);
+
+    // Calculate Km Travelled and Fuel Used for the filtered period
+    const calculateKmAndFuel = () => {
+        let kmTravelled = 0;
+        let fuelUsed = 0;
+
+        // Group fuel logs by vehicle to calculate distance accurately
+        const fuelLogsByVehicle = filteredFuelLogs.reduce((acc, log) => {
+            if (!acc[log.vehicleId]) acc[log.vehicleId] = [];
+            acc[log.vehicleId].push(log);
+            return acc;
+        }, {});
+
+        for (const vehicleId in fuelLogsByVehicle) {
+            const sortedLogs = fuelLogsByVehicle[vehicleId].sort((a, b) => new Date(a.date) - new Date(b.date));
+            // To calculate total km travelled within a period, we need the odometer at the start
+            // and end of the period for each vehicle, or sum up distances between consecutive logs.
+            // For simplicity, we'll sum up the difference between current and previous odometer for each log.
+            // This might overcount if a vehicle has multiple fill-ups within the period and previousOdometer
+            // refers to a log outside the current filtered period. A more robust solution would involve
+            // finding the min and max odometer readings within the period for each vehicle.
+            for (let i = 0; i < sortedLogs.length; i++) {
+                fuelUsed += parseFloat(sortedLogs[i].liters || 0);
+                if (sortedLogs[i].previousOdometer !== undefined) {
+                    kmTravelled += (sortedLogs[i].odometer - sortedLogs[i].previousOdometer);
+                }
+            }
+        }
+        return { kmTravelled, fuelUsed };
+    };
+
+    const { kmTravelled, fuelUsed } = calculateKmAndFuel();
+
+    // Effect for Fuel Calculator
+    useEffect(() => {
+        if (tzsAmount && calcSelectedVehicle && tzsPerLiter > 0) {
+            const liters = parseFloat(tzsAmount) / tzsPerLiter;
+            setEstimatedLiters(liters);
+            const kmPerLiterForCC = getKmPerLiterByCC(calcSelectedVehicle.engineCC);
+            setEstimatedKm(liters * kmPerLiterForCC);
+        } else {
+            setEstimatedLiters(0);
+            setEstimatedKm(0);
+        }
+    }, [tzsAmount, calcSelectedVehicle, tzsPerLiter]);
+
+    const handleFindStations = () => {
+        setError("Finding nearby petrol stations requires integration with external mapping APIs (e.g., Google Maps Places API), which is not available in this demo environment.");
+    };
+
+
+    return (
+        <div className="flex flex-col gap-6">
+            {/* Time Period Selector */}
+            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md flex flex-wrap justify-center gap-3">
+                <button
+                    onClick={() => setSelectedPeriod('day')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'day' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Day
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('week')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'week' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Week
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('month')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'month' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Month
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('all')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'all' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    All Time
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('custom')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'custom' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Custom
+                </button>
+                {selectedPeriod === 'custom' && (
+                    <div className="flex flex-col sm:flex-row gap-2 mt-2 sm:mt-0">
+                        <input
+                            type="date"
+                            value={customStartDate}
+                            onChange={(e) => setCustomStartDate(e.target.value)}
+                            className="p-2 rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                        />
+                        <span className="text-gray-600 dark:text-gray-400 flex items-center justify-center">-</span>
+                        <input
+                            type="date"
+                            value={customEndDate}
+                            onChange={(e) => setCustomEndDate(e.target.value)}
+                            className="p-2 rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                        />
+                    </div>
+                )}
+            </div>
+
+            {/* Main Metrics */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <Card title="Total Fuel Cost" icon={<GasPumpIcon className="w-8 h-8 text-green-500" />}>
+                    <p className="text-3xl font-bold text-green-700 dark:text-green-400">TZS {totalFuelCosts.toFixed(2)}</p>
+                </Card>
+                <Card title="Total Expenses" icon={<DollarSignIcon className="w-8 h-8 text-purple-500" />}>
+                    <p className="text-3xl font-bold text-purple-700 dark:text-purple-400">TZS {totalExpenses.toFixed(2)}</p>
+                </Card>
+                <Card title="Km Travelled" icon={<RoadIcon className="w-8 h-8 text-indigo-500" />}>
+                    <p className="text-3xl font-bold text-indigo-700 dark:text-indigo-400">{kmTravelled.toFixed(0)} km</p>
+                </Card>
+                <Card title="Fuel Used" icon={<FuelIcon className="w-8 h-8 text-orange-500" />}>
+                    <p className="text-3xl font-bold text-orange-700 dark:text-orange-400">{fuelUsed.toFixed(1)} L</p>
+                </Card>
+            </div>
+
+            {/* Fuel Calculator */}
+            <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-lg shadow-inner border border-gray-200 dark:border-gray-700">
+                <h3 className="text-xl font-bold mb-4 text-center">Fuel Calculator</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <label htmlFor="tzsPerLiterInput" className="block text-sm font-medium text-gray-700 dark:text-gray-300">TZS per Liter</label>
+                        <input
+                            type="number"
+                            step="0.01"
+                            id="tzsPerLiterInput"
+                            value={tzsPerLiter}
+                            onChange={(e) => setTzsPerLiter(parseFloat(e.target.value) || 0)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2"
+                        />
+                    </div>
+                    <div>
+                        <label htmlFor="calcVehicleSelect" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Select Vehicle for Estimate</label>
+                        <select
+                            id="calcVehicleSelect"
+                            value={calcSelectedVehicle?.id || ''}
+                            onChange={(e) => setCalcSelectedVehicle(vehicles.find(v => v.id === e.target.value) || null)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2"
+                        >
+                            <option value="">Select a vehicle</option>
+                            {vehicles.map(v => (
+                                <option key={v.id} value={v.id}>{v.make} {v.model} ({v.engineCC ? `${v.engineCC}cc` : 'N/A'})</option>
+                            ))}
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="tzsAmount" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Amount in TZS</label>
+                        <input
+                            type="number"
+                            id="tzsAmount"
+                            value={tzsAmount}
+                            onChange={(e) => setTzsAmount(e.target.value)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Liters (approx.)</label>
+                        <p className="mt-1 text-lg font-semibold text-green-700 dark:text-green-400">{estimatedLiters.toFixed(2)} L</p>
+                    </div>
+                    <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Estimated Kilometers</label>
+                        <p className="mt-1 text-lg font-semibold text-green-700 dark:text-green-400">
+                            {calcSelectedVehicle ?
+                                `${estimatedKm.toFixed(0)} km (based on ${calcSelectedVehicle.engineCC ? `${calcSelectedVehicle.engineCC}cc model` : 'vehicle average'} est. ${getKmPerLiterByCC(calcSelectedVehicle.engineCC).toFixed(2)} Km/L)`
+                                : 'Select a vehicle in "My Garage" and add Engine CC to estimate Km'}
+                        </p>
+                    </div>
+                </div>
+                <button
+                    onClick={handleFindStations}
+                    className="mt-6 w-full px-6 py-3 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300 flex items-center justify-center"
+                >
+                    <MapPinIcon className="w-5 h-5 mr-2" /> Find Nearby Petrol Stations (Placeholder)
+                </button>
+            </div>
+
+
+            {/* Other Dashboard Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <Card title="Next Service Due" icon={<ToolsIcon className="w-8 h-8 text-blue-500" />}>
+                    {nextService ? (
+                        <>
+                            <p className="text-lg font-semibold">{nextService.vehicleName}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400">{nextService.type} on {new Date(nextService.nextDueDate || nextService.date).toLocaleDateString()}</p>
+                            <button
+                                onClick={() => {
+                                    setSelectedVehicle(vehicles.find(v => v.id === nextService.vehicleId));
+                                    setCurrentPage('maintenance');
+                                }}
+                                className="mt-3 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+                            >
+                                View Details
+                            </button>
+                        </>
+                    ) : (
+                        <p className="text-gray-600 dark:text-gray-400">No upcoming services found.</p>
+                    )}
+                </Card>
+
+                <Card title="My Vehicles" icon={<CarIcon className="w-8 h-8 text-yellow-500" />}>
+                    <p className="text-2xl font-bold">{vehicles.length}</p>
+                    <p className="text-sm text-gray-600 dark:text-gray-400">Vehicles currently managed.</p>
+                    <button
+                        onClick={() => setCurrentPage('my-garage')}
+                        className="mt-3 px-4 py-2 bg-yellow-500 text-white rounded-md hover:bg-yellow-600 transition-colors"
+                    >
+                        Manage Vehicles
+                    </button>
+                </Card>
+            </div>
+
+            {/* Adverts and Sponsors Section */}
+            <AdvertsAndSponsors />
+        </div>
+    );
+};
+
+// Reusable Card Component
+const Card = ({ title, icon, children }) => {
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md flex flex-col items-center text-center">
+            <div className="mb-4">{icon}</div>
+            <h2 className="text-xl font-semibold mb-2">{title}</h2>
+            {children}
+        </div>
+    );
+};
+
+// My Garage Component
+const MyGarage = () => {
+    const { vehicles, addDocument, updateDocument, deleteDocument, setSelectedVehicle, setError, fuelLogs, maintenanceLogs, expenses } = useContext(AppContext);
+    const [isAddingVehicle, setIsAddingVehicle] = useState(false);
+    const [editingVehicle, setEditingVehicle] = useState(null);
+    const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+    const [vehicleToDelete, setVehicleToDelete] = useState(null);
+
+    const handleAddOrUpdateVehicle = async (vehicleData) => {
+        if (editingVehicle) {
+            await updateDocument('vehicles', editingVehicle.id, vehicleData);
+            setEditingVehicle(null);
+        } else {
+            await addDocument('vehicles', vehicleData);
+        }
+        setIsAddingVehicle(false);
+    };
+
+    const handleDeleteVehicle = async (vehicle) => {
+        setVehicleToDelete(vehicle);
+        setShowConfirmDelete(true);
+    };
+
+    const confirmDelete = async () => {
+        if (vehicleToDelete) {
+            await deleteDocument('vehicles', vehicleToDelete.id);
+            // Also delete associated fuel logs, maintenance logs, and expenses
+            // Note: In a real app, you'd filter these by vehicleId and delete them.
+            // For local storage, a full clear of associated data would be more complex
+            // without proper indexing or a separate "delete all for vehicle X" function.
+            // For now, we'll just delete the vehicle itself.
+        }
+        setShowConfirmDelete(false);
+        setVehicleToDelete(null);
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">My Garage</h2>
+
+            <button
+                onClick={() => { setIsAddingVehicle(true); setEditingVehicle(null); }}
+                className="mb-6 w-full px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-300 flex items-center justify-center"
+            >
+                <PlusIcon className="w-5 h-5 mr-2" /> Add New Vehicle
+            </button>
+
+            {(isAddingVehicle || editingVehicle) && (
+                <VehicleForm
+                    vehicle={editingVehicle}
+                    onSave={handleAddOrUpdateVehicle}
+                    onCancel={() => { setIsAddingVehicle(false); setEditingVehicle(null); }}
+                />
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-8">
+                {vehicles.length === 0 ? (
+                    <p className="col-span-full text-center text-gray-600 dark:text-gray-400">No vehicles added yet. Add your first vehicle!</p>
+                ) : (
+                    vehicles.map(vehicle => (
+                        <VehicleCard
+                            key={vehicle.id}
+                            vehicle={vehicle}
+                            onEdit={() => { setEditingVehicle(vehicle); setIsAddingVehicle(true); }}
+                            onDelete={() => handleDeleteVehicle(vehicle)}
+                        />
+                    ))
+                )}
+            </div>
+
+            {showConfirmDelete && (
+                <ConfirmDialog
+                    message={`Are you sure you want to delete ${vehicleToDelete?.make} ${vehicleToDelete?.model}? This will also delete all associated fuel logs, maintenance logs, and expenses.`}
+                    onConfirm={confirmDelete}
+                    onCancel={() => setShowConfirmDelete(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+// Vehicle Card Component
+const VehicleCard = ({ vehicle, onEdit, onDelete }) => {
+    const { setSelectedVehicle, setCurrentPage } = useContext(AppContext);
+
+    return (
+        <div className="bg-gray-50 dark:bg-gray-700 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-600 flex flex-col">
+            <h3 className="text-xl font-semibold mb-2">{vehicle.make} {vehicle.model}</h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300">Year: {vehicle.year}</p>
+            <p className="text-sm text-gray-600 dark:text-gray-300">License Plate: {vehicle.licensePlate}</p>
+            <p className="text-sm text-gray-600 dark:text-gray-300">Current Odometer: {vehicle.currentOdometer} km</p>
+            {vehicle.engineCC && <p className="text-sm text-gray-600 dark:text-gray-300">Engine CC: {vehicle.engineCC}</p>}
+            <div className="flex justify-end mt-4 space-x-2">
+                <button
+                    onClick={() => { setSelectedVehicle(vehicle); setCurrentPage('fuel-log'); }}
+                    className="px-3 py-1 text-sm bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
+                >
+                    Fuel
+                </button>
+                <button
+                    onClick={() => { setSelectedVehicle(vehicle); setCurrentPage('maintenance'); }}
+                    className="px-3 py-1 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+                >
+                    Maintenance
+                </button>
+                <button
+                    onClick={() => { setSelectedVehicle(vehicle); setCurrentPage('expenses'); }}
+                    className="px-3 py-1 text-sm bg-purple-500 text-white rounded-md hover:bg-purple-600 transition-colors"
+                >
+                    Expenses
+                </button>
+                <button
+                    onClick={onEdit}
+                    className="px-3 py-1 text-sm bg-yellow-500 text-white rounded-md hover:bg-yellow-600 transition-colors"
+                >
+                    Edit
+                </button>
+                <button
+                    onClick={onDelete}
+                    className="px-3 py-1 text-sm bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors"
+                >
+                    Delete
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// Vehicle Form Component (Add/Edit)
+const VehicleForm = ({ vehicle, onSave, onCancel }) => {
+    const [make, setMake] = useState(vehicle?.make || '');
+    const [model, setModel] = useState(vehicle?.model || '');
+    const [year, setYear] = useState(vehicle?.year || '');
+    const [vin, setVin] = useState(vehicle?.vin || '');
+    const [licensePlate, setLicensePlate] = useState(vehicle?.licensePlate || '');
+    const [currentOdometer, setCurrentOdometer] = useState(vehicle?.currentOdometer || '');
+    const [engineCC, setEngineCC] = useState(vehicle?.engineCC || ''); // New field
+    const [purchaseDate, setPurchaseDate] = useState(vehicle?.purchaseDate || '');
+    const [purchasePrice, setPurchasePrice] = useState(vehicle?.purchasePrice || '');
+    const [registrationExpiry, setRegistrationExpiry] = useState(vehicle?.registrationExpiry || '');
+    const [insuranceProvider, setInsuranceProvider] = useState(vehicle?.insuranceProvider || '');
+    const [insurancePolicy, setInsurancePolicy] = useState(vehicle?.insurancePolicy || '');
+    const [insuranceExpiry, setInsuranceExpiry] = useState(vehicle?.insuranceExpiry || '');
+    const { setError } = useContext(AppContext);
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!make || !model || !year || !licensePlate || !currentOdometer) {
+            setError("Please fill in all required fields (Make, Model, Year, License Plate, Current Odometer).");
+            return;
+        }
+        onSave({
+            make, model, year: parseInt(year), vin, licensePlate,
+            currentOdometer: parseFloat(currentOdometer), engineCC: parseInt(engineCC || 0), // Save engineCC
+            purchaseDate,
+            purchasePrice: parseFloat(purchasePrice || 0), registrationExpiry,
+            insuranceProvider, insurancePolicy, insuranceExpiry
+        });
+    };
+
+    // Placeholder for VIN scanning - not implemented in this code due to external API/hardware requirements
+    const handleVinScan = () => {
+        setError("VIN scanning feature is a placeholder and not implemented in this demo.");
+        // In a real app, this would trigger camera access and an OCR/VIN decoding API
+    };
+
+    // Placeholder for License Plate scanning - not implemented in this code
+    const handleLicensePlateScan = () => {
+        setError("License plate scanning feature is a placeholder and not implemented in this demo.");
+        // In a real app, this would trigger camera access and an OCR/LPR API
+    };
+
+    return (
+        <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-lg shadow-inner mb-8 border border-gray-200 dark:border-gray-700">
+            <h3 className="text-xl font-bold mb-4 text-center">{vehicle ? 'Edit Vehicle' : 'Add New Vehicle'}</h3>
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label htmlFor="make" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Make <span className="text-red-500">*</span></label>
+                    <input type="text" id="make" value={make} onChange={(e) => setMake(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="model" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Model <span className="text-red-500">*</span></label>
+                    <input type="text" id="model" value={model} onChange={(e) => setModel(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="year" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Year <span className="text-red-500">*</span></label>
+                    <input type="number" id="year" value={year} onChange={(e) => setYear(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div className="relative">
+                    <label htmlFor="vin" className="block text-sm font-medium text-gray-700 dark:text-gray-300">VIN</label>
+                    <input type="text" id="vin" value={vin} onChange={(e) => setVin(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 pr-10" />
+                    <button type="button" onClick={handleVinScan} className="absolute inset-y-0 right-0 flex items-center pr-3 pt-6 text-gray-500 dark:text-gray-400 hover:text-blue-600">
+                        <ScanIcon className="w-5 h-5" />
+                    </button>
+                </div>
+                <div className="relative">
+                    <label htmlFor="licensePlate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">License Plate <span className="text-red-500">*</span></label>
+                    <input type="text" id="licensePlate" value={licensePlate} onChange={(e) => setLicensePlate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 pr-10" required />
+                    <button type="button" onClick={handleLicensePlateScan} className="absolute inset-y-0 right-0 flex items-center pr-3 pt-6 text-gray-500 dark:text-gray-400 hover:text-blue-600">
+                        <ScanIcon className="w-5 h-5" />
+                    </button>
+                </div>
+                <div>
+                    <label htmlFor="currentOdometer" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Current Odometer (km) <span className="text-red-500">*</span></label>
+                    <input type="number" id="currentOdometer" value={currentOdometer} onChange={(e) => setCurrentOdometer(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="engineCC" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Engine CC</label>
+                    <input type="number" id="engineCC" value={engineCC} onChange={(e) => setEngineCC(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="purchaseDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Purchase Date</label>
+                    <input type="date" id="purchaseDate" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="purchasePrice" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Purchase Price (TZS)</label>
+                    <input type="number" id="purchasePrice" value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="registrationExpiry" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Registration Expiry</label>
+                    <input type="date" id="registrationExpiry" value={registrationExpiry} onChange={(e) => setRegistrationExpiry(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="insuranceProvider" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Insurance Provider</label>
+                    <input type="text" id="insuranceProvider" value={insuranceProvider} onChange={(e) => setInsuranceProvider(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="insurancePolicy" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Insurance Policy #</label>
+                    <input type="text" id="insurancePolicy" value={insurancePolicy} onChange={(e) => setInsurancePolicy(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="insuranceExpiry" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Insurance Expiry</label>
+                    <input type="date" id="insuranceExpiry" value={insuranceExpiry} onChange={(e) => setInsuranceExpiry(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div className="col-span-1 md:col-span-2 flex justify-end space-x-4 mt-4">
+                    <button type="button" onClick={onCancel} className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 transition-colors">
+                        {vehicle ? 'Update Vehicle' : 'Add Vehicle'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// Fuel Log Component
+const FuelLog = () => {
+    const { vehicles, fuelLogs, addDocument, deleteDocument, selectedVehicle, setSelectedVehicle, setError, selectedPeriod, setSelectedPeriod, customStartDate, setCustomStartDate, customEndDate, setCustomEndDate, tzsPerLiter } = useContext(AppContext);
+    const [isAddingFuel, setIsAddingFuel] = useState(false);
+    const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+    const [fuelLogToDelete, setFuelLogToDelete] = useState(null);
+
+    const { startDate, endDate } = getPeriodDates(selectedPeriod, customStartDate, customEndDate);
+
+    const filteredFuelLogs = fuelLogs.filter(log => {
+        const logDate = new Date(log.date);
+        const vehicleMatch = selectedVehicle ? log.vehicleId === selectedVehicle.id : true;
+        const dateMatch = (!startDate || logDate >= startDate) && (!endDate || logDate < endDate);
+        return vehicleMatch && dateMatch;
+    });
+
+    const handleAddFuelLog = async (logData) => {
+        await addDocument('fuelLogs', logData);
+        setIsAddingFuel(false);
+    };
+
+    const handleDeleteFuelLog = async (log) => {
+        setFuelLogToDelete(log);
+        setShowConfirmDelete(true);
+    };
+
+    const confirmDelete = async () => {
+        if (fuelLogToDelete) {
+            await deleteDocument('fuelLogs', fuelLogToDelete.id);
+        }
+        setShowConfirmDelete(false);
+        setFuelLogToDelete(null);
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">Fuel Log</h2>
+
+            <VehicleSelector
+                vehicles={vehicles}
+                selectedVehicle={selectedVehicle}
+                setSelectedVehicle={setSelectedVehicle}
+                label="Select Vehicle for Fuel Log"
+            />
+
+            {/* Time Period Selector for Fuel Log */}
+            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md flex flex-wrap justify-center gap-3 mb-6">
+                <button
+                    onClick={() => setSelectedPeriod('day')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'day' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Day
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('week')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'week' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Week
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('month')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'month' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Month
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('all')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'all' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    All Time
+                </button>
+                <button
+                    onClick={() => setSelectedPeriod('custom')}
+                    className={`px-4 py-2 rounded-full transition-all duration-300 ${selectedPeriod === 'custom' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600'}`}
+                >
+                    Custom
+                </button>
+                {selectedPeriod === 'custom' && (
+                    <div className="flex flex-col sm:flex-row gap-2 mt-2 sm:mt-0">
+                        <input
+                            type="date"
+                            value={customStartDate}
+                            onChange={(e) => setCustomStartDate(e.target.value)}
+                            className="p-2 rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                        />
+                        <span className="text-gray-600 dark:text-gray-400 flex items-center justify-center">-</span>
+                        <input
+                            type="date"
+                            value={customEndDate}
+                            onChange={(e) => setCustomEndDate(e.target.value)}
+                            className="p-2 rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                        />
+                    </div>
+                )}
+            </div>
+
+            <button
+                onClick={() => setIsAddingFuel(true)}
+                className="mb-6 w-full px-6 py-3 bg-green-600 text-white rounded-lg shadow-md hover:bg-green-700 transition-colors duration-300 flex items-center justify-center"
+            >
+                <PlusIcon className="w-5 h-5 mr-2" /> Add Fuel Entry
+            </button>
+
+            {isAddingFuel && (
+                <FuelLogForm
+                    vehicles={vehicles}
+                    selectedVehicle={selectedVehicle}
+                    onSave={handleAddFuelLog}
+                    onCancel={() => setIsAddingFuel(false)}
+                />
+            )}
+
+            <div className="mt-8">
+                <h3 className="text-xl font-semibold mb-4">Fuel History {selectedVehicle ? `for ${selectedVehicle.make} ${selectedVehicle.model}` : 'for All Vehicles'}</h3>
+                {filteredFuelLogs.length === 0 ? (
+                    <p className="text-center text-gray-600 dark:text-gray-400">No fuel entries yet for this period.</p>
+                ) : (
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead className="bg-gray-50 dark:bg-gray-700">
+                                <tr>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Vehicle</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Odometer (km)</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Liters</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Cost (TZS)</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Km/L</th>
+                                    <th scope="col" className="relative px-6 py-3"><span className="sr-only">Actions</span></th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                {filteredFuelLogs.sort((a, b) => new Date(b.date) - new Date(a.date)).map(log => {
+                                    const vehicle = vehicles.find(v => v.id === log.vehicleId);
+                                    const kmPerLiter = log.liters > 0 && log.previousOdometer !== undefined ? (log.odometer - log.previousOdometer) / log.liters : 0;
+                                    return (
+                                        <tr key={log.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{new Date(log.date).toLocaleDateString()}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{vehicle ? `${vehicle.make} ${vehicle.model}` : 'N/A'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.odometer}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.liters}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">TZS {log.cost.toFixed(2)}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{kmPerLiter.toFixed(2)}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button
+                                                    onClick={() => handleDeleteFuelLog(log)}
+                                                    className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                                >
+                                                    Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+            {showConfirmDelete && (
+                <ConfirmDialog
+                    message={`Are you sure you want to delete this fuel log entry?`}
+                    onConfirm={confirmDelete}
+                    onCancel={() => setShowConfirmDelete(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+// Fuel Log Form Component
+const FuelLogForm = ({ vehicles, selectedVehicle, onSave, onCancel }) => {
+    const { fuelLogs, setError } = useContext(AppContext);
+    const [vehicleId, setVehicleId] = useState(selectedVehicle?.id || '');
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [odometer, setOdometer] = useState('');
+    const [liters, setLiters] = useState('');
+    const [cost, setCost] = useState('');
+    const [fuelType, setFuelType] = useState('Petrol');
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!vehicleId || !date || !odometer || !liters || !cost) {
+            setError("Please fill in all required fields.");
+            return;
+        }
+
+        // Get previous odometer for km/L calculation
+        const vehicleFuelLogs = fuelLogs.filter(log => log.vehicleId === vehicleId);
+        const sortedLogs = vehicleFuelLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+        const previousOdometer = sortedLogs.length > 0 ? sortedLogs[0].odometer : 0;
+
+        onSave({
+            vehicleId,
+            date,
+            odometer: parseFloat(odometer),
+            liters: parseFloat(liters),
+            cost: parseFloat(cost),
+            fuelType,
+            previousOdometer // Store previous odometer for calculation
+        });
+    };
+
+    return (
+        <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-lg shadow-inner mb-8 border border-gray-200 dark:border-gray-700">
+            <h3 className="text-xl font-bold mb-4 text-center">Add New Fuel Entry</h3>
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label htmlFor="fuelVehicle" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Vehicle <span className="text-red-500">*</span></label>
+                    <select id="fuelVehicle" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required>
+                        <option value="">Select a vehicle</option>
+                        {vehicles.map(v => (
+                            <option key={v.id} value={v.id}>{v.make} {v.model} ({v.licensePlate})</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="fuelDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Date <span className="text-red-500">*</span></label>
+                    <input type="date" id="fuelDate" value={date} onChange={(e) => setDate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="fuelOdometer" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Odometer (km) <span className="text-red-500">*</span></label>
+                    <input type="number" id="fuelOdometer" value={odometer} onChange={(e) => setOdometer(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="fuelLiters" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Liters <span className="text-red-500">*</span></label>
+                    <input type="number" step="0.01" id="fuelLiters" value={liters} onChange={(e) => setLiters(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="fuelCost" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Cost (TZS) <span className="text-red-500">*</span></label>
+                    <input type="number" step="0.01" id="fuelCost" value={cost} onChange={(e) => setCost(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="fuelType" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Fuel Type</label>
+                    <select id="fuelType" value={fuelType} onChange={(e) => setFuelType(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-green-500 focus:ring-green-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2">
+                        <option value="Petrol">Petrol</option>
+                        <option value="Diesel">Diesel</option>
+                        <option value="Electric">Electric</option>
+                        <option value="Hybrid">Hybrid</option>
+                    </select>
+                </div>
+                <div className="col-span-1 md:col-span-2 flex justify-end space-x-4 mt-4">
+                    <button type="button" onClick={onCancel} className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" className="px-6 py-2 bg-green-600 text-white rounded-md shadow-md hover:bg-green-700 transition-colors">
+                        Add Fuel Entry
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// Maintenance Component
+const Maintenance = () => {
+    const { vehicles, maintenanceLogs, addDocument, updateDocument, deleteDocument, selectedVehicle, setSelectedVehicle, setError, selectedPeriod, customStartDate, customEndDate } = useContext(AppContext);
+    const [isAddingMaintenance, setIsAddingMaintenance] = useState(false);
+    const [editingMaintenance, setEditingMaintenance] = useState(null);
+    const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+    const [maintenanceLogToDelete, setMaintenanceLogToDelete] = useState(null);
+
+    const { startDate, endDate } = getPeriodDates(selectedPeriod, customStartDate, customEndDate);
+
+    const filteredMaintenanceLogs = maintenanceLogs.filter(log => {
+        const logDate = new Date(log.date);
+        const vehicleMatch = selectedVehicle ? log.vehicleId === selectedVehicle.id : true;
+        const dateMatch = (!startDate || logDate >= startDate) && (!endDate || logDate < endDate);
+        return vehicleMatch && dateMatch;
+    });
+
+    const handleAddOrUpdateMaintenance = async (logData) => {
+        if (editingMaintenance) {
+            await updateDocument('maintenanceLogs', editingMaintenance.id, logData);
+            setEditingMaintenance(null);
+        } else {
+            await addDocument('maintenanceLogs', logData);
+        }
+        setIsAddingMaintenance(false);
+    };
+
+    const handleDeleteMaintenanceLog = async (log) => {
+        setMaintenanceLogToDelete(log);
+        setShowConfirmDelete(true);
+    };
+
+    const confirmDelete = async () => {
+        if (maintenanceLogToDelete) {
+            await deleteDocument('maintenanceLogs', maintenanceLogToDelete.id);
+        }
+        setShowConfirmDelete(false);
+        setMaintenanceLogToDelete(null);
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">Vehicle Maintenance</h2>
+
+            <VehicleSelector
+                vehicles={vehicles}
+                selectedVehicle={selectedVehicle}
+                setSelectedVehicle={setSelectedVehicle}
+                label="Select Vehicle for Maintenance Log"
+            />
+
+            <button
+                onClick={() => { setIsAddingMaintenance(true); setEditingMaintenance(null); }}
+                className="mb-6 w-full px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-300 flex items-center justify-center"
+            >
+                <PlusIcon className="w-5 h-5 mr-2" /> Add Maintenance Entry
+            </button>
+
+            {(isAddingMaintenance || editingMaintenance) && (
+                <MaintenanceForm
+                    vehicles={vehicles}
+                    maintenance={editingMaintenance}
+                    selectedVehicle={selectedVehicle}
+                    onSave={handleAddOrUpdateMaintenance}
+                    onCancel={() => { setIsAddingMaintenance(false); setEditingMaintenance(null); }}
+                />
+            )}
+
+            <div className="mt-8">
+                <h3 className="text-xl font-semibold mb-4">Maintenance History {selectedVehicle ? `for ${selectedVehicle.make} ${selectedVehicle.model}` : 'for All Vehicles'}</h3>
+                {filteredMaintenanceLogs.length === 0 ? (
+                    <p className="text-center text-gray-600 dark:text-gray-400">No maintenance entries yet for this period.</p>
+                ) : (
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead className="bg-gray-50 dark:bg-gray-700">
+                                <tr>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Vehicle</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Type</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Odometer (km)</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Cost (TZS)</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Next Due</th>
+                                    <th scope="col" className="relative px-6 py-3"><span className="sr-only">Actions</span></th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                {filteredMaintenanceLogs.sort((a, b) => new Date(b.date) - new Date(a.date)).map(log => {
+                                    const vehicle = vehicles.find(v => v.id === log.vehicleId);
+                                    return (
+                                        <tr key={log.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{new Date(log.date).toLocaleDateString()}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{vehicle ? `${vehicle.make} ${vehicle.model}` : 'N/A'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.type}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.odometer}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">TZS {log.cost.toFixed(2)}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                                                {log.nextDueDate ? new Date(log.nextDueDate).toLocaleDateString() : 'N/A'}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                                <button
+                                                    onClick={() => setEditingMaintenance(log)}
+                                                    className="text-yellow-600 hover:text-yellow-900 dark:text-yellow-400 dark:hover:text-yellow-300"
+                                                >
+                                                    Edit
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteMaintenanceLog(log)}
+                                                    className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                                >
+                                                    Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+            {showConfirmDelete && (
+                <ConfirmDialog
+                    message={`Are you sure you want to delete this maintenance log entry?`}
+                    onConfirm={confirmDelete}
+                    onCancel={() => setShowConfirmDelete(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+// Maintenance Form Component
+const MaintenanceForm = ({ vehicles, maintenance, selectedVehicle, onSave, onCancel }) => {
+    const { setError } = useContext(AppContext);
+    const [vehicleId, setVehicleId] = useState(maintenance?.vehicleId || selectedVehicle?.id || '');
+    const [date, setDate] = useState(maintenance?.date || new Date().toISOString().split('T')[0]);
+    const [type, setType] = useState(maintenance?.type || '');
+    const [odometer, setOdometer] = useState(maintenance?.odometer || '');
+    const [cost, setCost] = useState(maintenance?.cost || '');
+    const [notes, setNotes] = useState(maintenance?.notes || '');
+    const [partsDetails, setPartsDetails] = useState(maintenance?.partsDetails || ''); // New field
+    const [serviceCenterName, setServiceCenterName] = useState(maintenance?.serviceCenterName || ''); // New field
+    const [fundiName, setFundiName] = useState(maintenance?.fundiName || ''); // New field
+    const [fundiContact, setFundiContact] = useState(maintenance?.fundiContact || ''); // New field
+    const [nextDueDate, setNextDueDate] = useState(maintenance?.nextDueDate || '');
+
+    const maintenanceTypes = [
+        'Engine Oil Change', 'Gearbox Oil Change', 'Differential Oil Change', 'Chassis Lube',
+        'Wheel Bearing Check/Replacement', 'Brake Fluid Change/Check', 'Steering Check',
+        'Battery Check/Replacement', 'Air Cleaner Replacement', 'Spark Plugs Replacement',
+        'Light System Check', 'Fuel Filter Replacement (Petrol)', 'Fuel Filter Replacement (Diesel)',
+        'Greasing', 'AC Filter Replacement', 'Car Diagnosis', 'Other Repair'
+    ];
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!vehicleId || !date || !type || !odometer || !cost) {
+            setError("Please fill in all required fields (Vehicle, Date, Type, Odometer, Cost).");
+            return;
+        }
+        onSave({
+            vehicleId,
+            date,
+            type,
+            odometer: parseFloat(odometer),
+            cost: parseFloat(cost),
+            notes,
+            partsDetails, // Save new field
+            serviceCenterName, // Save new field
+            fundiName, // Save new field
+            fundiContact, // Save new field
+            nextDueDate
+        });
+    };
+
+    return (
+        <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-lg shadow-inner mb-8 border border-gray-200 dark:border-gray-700">
+            <h3 className="text-xl font-bold mb-4 text-center">{maintenance ? 'Edit Maintenance Entry' : 'Add New Maintenance Entry'}</h3>
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label htmlFor="maintenanceVehicle" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Vehicle <span className="text-red-500">*</span></label>
+                    <select id="maintenanceVehicle" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required>
+                        <option value="">Select a vehicle</option>
+                        {vehicles.map(v => (
+                            <option key={v.id} value={v.id}>{v.make} {v.model} ({v.licensePlate})</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="maintenanceDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Date <span className="text-red-500">*</span></label>
+                    <input type="date" id="maintenanceDate" value={date} onChange={(e) => setDate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="maintenanceType" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Type <span className="text-red-500">*</span></label>
+                    <select id="maintenanceType" value={type} onChange={(e) => setType(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required>
+                        <option value="">Select service type</option>
+                        {maintenanceTypes.map(mt => (
+                            <option key={mt} value={mt}>{mt}</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="maintenanceOdometer" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Odometer (km) <span className="text-red-500">*</span></label>
+                    <input type="number" id="maintenanceOdometer" value={odometer} onChange={(e) => setOdometer(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="maintenanceCost" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Cost (TZS) <span className="text-red-500">*</span></label>
+                    <input type="number" step="0.01" id="maintenanceCost" value={cost} onChange={(e) => setCost(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="nextDueDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Next Due Date</label>
+                    <input type="date" id="nextDueDate" value={nextDueDate} onChange={(e) => setNextDueDate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div className="col-span-1 md:col-span-2">
+                    <label htmlFor="partsDetails" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Parts Changed/Remarks</label>
+                    <textarea id="partsDetails" value={partsDetails} onChange={(e) => setPartsDetails(e.target.value)}
+                        rows="2" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2"></textarea>
+                </div>
+                <div>
+                    <label htmlFor="serviceCenterName" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Service Center Name</label>
+                    <input type="text" id="serviceCenterName" value={serviceCenterName} onChange={(e) => setServiceCenterName(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="fundiName" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Fundi Name</label>
+                    <input type="text" id="fundiName" value={fundiName} onChange={(e) => setFundiName(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+                <div>
+                    <label htmlFor="fundiContact" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Fundi Contact</label>
+                    <input type="text" id="fundiContact" value={fundiContact} onChange={(e) => setFundiContact(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                </div>
+
+                <div className="col-span-1 md:col-span-2 flex justify-end space-x-4 mt-4">
+                    <button type="button" onClick={onCancel} className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 transition-colors">
+                        {maintenance ? 'Update Entry' : 'Add Entry'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// Expenses Component
+const Expenses = () => {
+    const { vehicles, expenses, addDocument, deleteDocument, selectedVehicle, setSelectedVehicle, setError, selectedPeriod, customStartDate, customEndDate } = useContext(AppContext);
+    const [isAddingExpense, setIsAddingExpense] = useState(false);
+    const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+    const [expenseToDelete, setExpenseToDelete] = useState(null);
+
+    const { startDate, endDate } = getPeriodDates(selectedPeriod, customStartDate, customEndDate);
+
+    const filteredExpenses = expenses.filter(log => {
+        const logDate = new Date(log.date);
+        const vehicleMatch = selectedVehicle ? log.vehicleId === selectedVehicle.id : true;
+        const dateMatch = (!startDate || logDate >= startDate) && (!endDate || logDate < endDate);
+        return vehicleMatch && dateMatch;
+    });
+
+    const handleAddExpense = async (logData) => {
+        await addDocument('expenses', logData);
+        setIsAddingExpense(false);
+    };
+
+    const handleDeleteExpense = async (log) => {
+        setExpenseToDelete(log);
+        setShowConfirmDelete(true);
+    };
+
+    const confirmDelete = async () => {
+        if (expenseToDelete) {
+            await deleteDocument('expenses', expenseToDelete.id);
+        }
+        setShowConfirmDelete(false);
+        setExpenseToDelete(null);
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">Vehicle Expenses</h2>
+
+            <VehicleSelector
+                vehicles={vehicles}
+                selectedVehicle={selectedVehicle}
+                setSelectedVehicle={setSelectedVehicle}
+                label="Select Vehicle for Expense Log"
+            />
+
+            <button
+                onClick={() => setIsAddingExpense(true)}
+                className="mb-6 w-full px-6 py-3 bg-purple-600 text-white rounded-lg shadow-md hover:bg-purple-700 transition-colors duration-300 flex items-center justify-center"
+            >
+                <PlusIcon className="w-5 h-5 mr-2" /> Add Expense Entry
+            </button>
+
+            {isAddingExpense && (
+                <ExpenseForm
+                    vehicles={vehicles}
+                    selectedVehicle={selectedVehicle}
+                    onSave={handleAddExpense}
+                    onCancel={() => setIsAddingExpense(false)}
+                />
+            )}
+
+            <div className="mt-8">
+                <h3 className="text-xl font-semibold mb-4">Expense History {selectedVehicle ? `for ${selectedVehicle.make} ${selectedVehicle.model}` : 'for All Vehicles'}</h3>
+                {filteredExpenses.length === 0 ? (
+                    <p className="text-center text-gray-600 dark:text-gray-400">No expense entries yet for this period.</p>
+                ) : (
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+                        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                            <thead className="bg-gray-50 dark:bg-gray-700">
+                                <tr>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Date</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Vehicle</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Category</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Amount (TZS)</th>
+                                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Description</th>
+                                    <th scope="col" className="relative px-6 py-3"><span className="sr-only">Actions</span></th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                {filteredExpenses.sort((a, b) => new Date(b.date) - new Date(a.date)).map(log => {
+                                    const vehicle = vehicles.find(v => v.id === log.vehicleId);
+                                    return (
+                                        <tr key={log.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{new Date(log.date).toLocaleDateString()}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{vehicle ? `${vehicle.make} ${vehicle.model}` : 'N/A'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.category}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">TZS {log.amount.toFixed(2)}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">{log.description}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button
+                                                    onClick={() => handleDeleteExpense(log)}
+                                                    className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300"
+                                                >
+                                                    Delete
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+            {showConfirmDelete && (
+                <ConfirmDialog
+                    message={`Are you sure you want to delete this expense entry?`}
+                    onConfirm={confirmDelete}
+                    onCancel={() => setShowConfirmDelete(false)}
+                />
+            )}
+        </div>
+    );
+};
+
+// Expense Form Component
+const ExpenseForm = ({ vehicles, selectedVehicle, onSave, onCancel }) => {
+    const { setError } = useContext(AppContext);
+    const [vehicleId, setVehicleId] = useState(selectedVehicle?.id || '');
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [category, setCategory] = useState('Other');
+    const [amount, setAmount] = useState('');
+    const [description, setDescription] = useState('');
+
+    const expenseCategories = [
+        'Fuel', 'Maintenance', 'Insurance', 'Registration', 'Cleaning', 'Parking', 'Tires', 'Repairs', 'Other'
+    ];
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!vehicleId || !date || !category || !amount) {
+            setError("Please fill in all required fields (Vehicle, Date, Category, Amount).");
+            return;
+        }
+        onSave({
+            vehicleId,
+            date,
+            category,
+            amount: parseFloat(amount),
+            description
+        });
+    };
+
+    return (
+        <div className="bg-gray-100 dark:bg-gray-900 p-6 rounded-lg shadow-inner mb-8 border border-gray-200 dark:border-gray-700">
+            <h3 className="text-xl font-bold mb-4 text-center">Add New Expense Entry</h3>
+            <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label htmlFor="expenseVehicle" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Vehicle <span className="text-red-500">*</span></label>
+                    <select id="expenseVehicle" value={vehicleId} onChange={(e) => setVehicleId(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required>
+                        <option value="">Select a vehicle</option>
+                        {vehicles.map(v => (
+                            <option key={v.id} value={v.id}>{v.make} {v.model} ({v.licensePlate})</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="expenseDate" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Date <span className="text-red-500">*</span></label>
+                    <input type="date" id="expenseDate" value={date} onChange={(e) => setDate(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div>
+                    <label htmlFor="expenseCategory" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Category <span className="text-red-500">*</span></label>
+                    <select id="expenseCategory" value={category} onChange={(e) => setCategory(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required>
+                        {expenseCategories.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label htmlFor="expenseAmount" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Amount (TZS) <span className="text-red-500">*</span></label>
+                    <input type="number" step="0.01" id="expenseAmount" value={amount} onChange={(e) => setAmount(e.target.value)}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" required />
+                </div>
+                <div className="col-span-1 md:col-span-2">
+                    <label htmlFor="expenseDescription" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+                    <textarea id="expenseDescription" value={description} onChange={(e) => setDescription(e.target.value)}
+                        rows="3" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2"></textarea>
+                </div>
+                <div className="col-span-1 md:col-span-2 flex justify-end space-x-4 mt-4">
+                    <button type="button" onClick={onCancel} className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit" className="px-6 py-2 bg-purple-600 text-white rounded-md shadow-md hover:bg-purple-700 transition-colors">
+                        Add Expense
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// User Profile Component
+const UserProfile = () => {
+    const { userDisplayName, userId, setError } = useContext(AppContext);
+    const [name, setName] = useState(userDisplayName === 'Guest' ? '' : userDisplayName);
+    const [email, setEmail] = useState(''); // In a real app, this would be fetched from auth.currentUser.email
+    const [phone, setPhone] = useState('');
+    const [isEditing, setIsEditing] = useState(false);
+
+    // In a real app, you'd fetch user profile data from Firestore or a separate user collection
+    // For this demo, we'll just use local state and display the auth user's display name/ID
+
+    const handleSaveProfile = async (e) => {
+        e.preventDefault();
+        setError("Saving user profile is a placeholder. In a real app, this would update a 'users' collection in Firestore.");
+        // Example of how you might save to a 'users' collection:
+        // await setDoc(doc(db, `artifacts/${appId}/users/${userId}/profile`, 'userProfile'), { name, email, phone }, { merge: true });
+        setIsEditing(false);
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md max-w-2xl mx-auto">
+            <h2 className="text-2xl font-bold mb-6 text-center">My Profile</h2>
+
+            <div className="mb-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                    <span className="font-semibold">Current User ID:</span> <span className="font-mono break-all">{userId}</span>
+                </p>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                    <span className="font-semibold">Display Name:</span> {userDisplayName}
+                </p>
+                {/* Removed appId as it's not relevant for local storage */}
+            </div>
+
+            {!isEditing ? (
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
+                        <p className="mt-1 text-lg font-semibold">{name || 'N/A'}</p>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
+                        <p className="mt-1 text-lg font-semibold">{email || 'N/A'}</p>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Phone</label>
+                        <p className="mt-1 text-lg font-semibold">{phone || 'N/A'}</p>
+                    </div>
+                    <button
+                        onClick={() => setIsEditing(true)}
+                        className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg shadow-md hover:bg-blue-700 transition-colors duration-300 flex items-center justify-center"
+                    >
+                        <EditIcon className="w-5 h-5 mr-2" /> Edit Profile
+                    </button>
+                </div>
+            ) : (
+                <form onSubmit={handleSaveProfile} className="space-y-4">
+                    <div>
+                        <label htmlFor="profileName" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
+                        <input type="text" id="profileName" value={name} onChange={(e) => setName(e.target.value)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                    </div>
+                    <div>
+                        <label htmlFor="profileEmail" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
+                        <input type="email" id="profileEmail" value={email} onChange={(e) => setEmail(e.target.value)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                    </div>
+                    <div>
+                        <label htmlFor="profilePhone" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Phone</label>
+                        <input type="tel" id="profilePhone" value={phone} onChange={(e) => setPhone(e.target.value)}
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2" />
+                    </div>
+                    <div className="flex justify-end space-x-4 mt-4">
+                        <button type="button" onClick={() => setIsEditing(false)} className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                            Cancel
+                        </button>
+                        <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700 transition-colors">
+                            Save Profile
+                        </button>
+                    </div>
+                </form>
+            )}
+        </div>
+    );
+};
+
+// Alerts Component (NEW)
+const Alerts = () => {
+    const { vehicles, maintenanceLogs, setCurrentPage, setSelectedVehicle } = useContext(AppContext);
+    const [alerts, setAlerts] = useState([]);
+
+    useEffect(() => {
+        const generateAlerts = () => {
+            const newAlerts = [];
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            vehicles.forEach(vehicle => {
+                const vehicleName = `${vehicle.make} ${vehicle.model} (${vehicle.licensePlate})`;
+
+                // 1. Maintenance Alerts
+                const vehicleMaintenance = maintenanceLogs.filter(log => log.vehicleId === vehicle.id);
+                const sortedMaintenance = vehicleMaintenance.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                // Check for upcoming scheduled maintenance (if nextDueDate is set)
+                const upcomingScheduled = vehicleMaintenance.filter(task =>
+                    task.nextDueDate && new Date(task.nextDueDate) >= today &&
+                    (new Date(task.nextDueDate).getTime() - today.getTime()) / (1000 * 60 * 60 * 24) <= 30 // Due within 30 days
+                ).sort((a, b) => new Date(a.nextDueDate) - new Date(b.nextDueDate));
+
+                upcomingScheduled.forEach(task => {
+                    newAlerts.push({
+                        type: 'Maintenance Due',
+                        vehicle: vehicleName,
+                        message: `${task.type} is due on ${new Date(task.nextDueDate).toLocaleDateString()}.`,
+                        severity: 'warning',
+                        action: () => { setSelectedVehicle(vehicle); setCurrentPage('maintenance'); }
+                    });
+                });
+
+                // Check for overdue scheduled maintenance
+                const overdueScheduled = vehicleMaintenance.filter(task =>
+                    task.nextDueDate && new Date(task.nextDueDate) < today && task.status !== 'Completed' // Assuming status field for completion
+                ).sort((a, b) => new Date(a.nextDueDate) - new Date(b.nextDueDate));
+
+                overdueScheduled.forEach(task => {
+                    newAlerts.push({
+                        type: 'Maintenance Overdue',
+                        vehicle: vehicleName,
+                        message: `${task.type} was due on ${new Date(task.nextDueDate).toLocaleDateString()}.`,
+                        severity: 'danger',
+                        action: () => { setSelectedVehicle(vehicle); setCurrentPage('maintenance'); }
+                    });
+                });
+
+                // Simple Oil Change reminder (if no specific nextDueDate is set for oil change)
+                const lastOilChange = sortedMaintenance.find(log => log.type === 'Engine Oil Change');
+                if (lastOilChange) {
+                    const monthsSince = (today.getFullYear() - new Date(lastOilChange.date).getFullYear()) * 12 + (today.getMonth() - new Date(lastOilChange.date).getMonth());
+                    const kmSince = vehicle.currentOdometer - lastOilChange.odometer;
+
+                    if (monthsSince >= 5 || kmSince >= 4500) { // Warn at 5 months or 4500km
+                        newAlerts.push({
+                            type: 'Oil Change Recommended',
+                            vehicle: vehicleName,
+                            message: `Engine Oil Change recommended soon. Last change was on ${new Date(lastOilChange.date).toLocaleDateString()} (${kmSince} km ago).`,
+                            severity: 'warning',
+                            action: () => { setSelectedVehicle(vehicle); setCurrentPage('maintenance'); }
+                        });
+                    }
+                    if (monthsSince >= 6 || kmSince >= 5000) { // Alert at 6 months or 5000km
+                        newAlerts.push({
+                            type: 'Oil Change Due',
+                            vehicle: vehicleName,
+                            message: `Engine Oil Change is due! Last change was on ${new Date(lastOilChange.date).toLocaleDateString()} (${kmSince} km ago).`,
+                            severity: 'danger',
+                            action: () => { setSelectedVehicle(vehicle); setCurrentPage('maintenance'); }
+                        });
+                    }
+                }
+
+
+                // 2. Registration Expiry
+                if (vehicle.registrationExpiry) {
+                    const expiryDate = new Date(vehicle.registrationExpiry);
+                    const daysUntilExpiry = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+                    if (daysUntilExpiry <= 30 && daysUntilExpiry > 0) {
+                        newAlerts.push({
+                            type: 'Registration Expiring',
+                            vehicle: vehicleName,
+                            message: `Registration expires in ${daysUntilExpiry} days on ${expiryDate.toLocaleDateString()}.`,
+                            severity: 'warning',
+                            action: () => { setCurrentPage('my-garage'); }
+                        });
+                    } else if (daysUntilExpiry <= 0) {
+                        newAlerts.push({
+                            type: 'Registration Expired',
+                            vehicle: vehicleName,
+                            message: `Registration expired on ${expiryDate.toLocaleDateString()}.`,
+                            severity: 'danger',
+                            action: () => { setCurrentPage('my-garage'); }
+                        });
+                    }
+                }
+
+                // 3. Insurance Expiry
+                if (vehicle.insuranceExpiry) {
+                    const expiryDate = new Date(vehicle.insuranceExpiry);
+                    const daysUntilExpiry = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+                    if (daysUntilExpiry <= 30 && daysUntilExpiry > 0) {
+                        newAlerts.push({
+                            type: 'Insurance Expiring',
+                            vehicle: vehicleName,
+                            message: `Insurance expires in ${daysUntilExpiry} days on ${expiryDate.toLocaleDateString()}.`,
+                            severity: 'warning',
+                            action: () => { setCurrentPage('my-garage'); }
+                        });
+                    } else if (daysUntilExpiry <= 0) {
+                        newAlerts.push({
+                            type: 'Insurance Expired',
+                            vehicle: vehicleName,
+                            message: `Insurance expired on ${expiryDate.toLocaleDateString()}.`,
+                            severity: 'danger',
+                            action: () => { setCurrentPage('my-garage'); }
+                        });
+                    }
+                }
+            });
+
+            // Sort alerts by severity (danger first) and then by date
+            newAlerts.sort((a, b) => {
+                const severityOrder = { danger: 1, warning: 2, info: 3 };
+                if (severityOrder[a.severity] !== severityOrder[b.severity]) {
+                    return severityOrder[a.severity] - severityOrder[b.severity];
+                }
+                // For date-based sorting, assume dates are within the message or action can lead to it
+                // For simplicity here, we'll keep the order from generation if severity is same.
+                return 0;
+            });
+
+            setAlerts(newAlerts);
+        };
+
+        generateAlerts();
+    }, [vehicles, maintenanceLogs]); // Re-generate alerts when vehicle or maintenance data changes
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">Alerts & Notifications</h2>
+
+            {alerts.length === 0 ? (
+                <p className="text-center text-gray-600 dark:text-gray-400">No active alerts at this time. Everything looks good!</p>
+            ) : (
+                <div className="space-y-4">
+                    {alerts.map((alert, index) => (
+                        <div
+                            key={index}
+                            className={`p-4 rounded-lg shadow-sm flex items-center justify-between
+                                ${alert.severity === 'danger' ? 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 border border-red-300 dark:border-red-700' :
+                                alert.severity === 'warning' ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200 border border-yellow-300 dark:border-yellow-700' :
+                                'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 border border-blue-300 dark:border-blue-700'
+                                }`}
+                        >
+                            <div>
+                                <p className="font-semibold">{alert.type} for {alert.vehicle}</p>
+                                <p className="text-sm">{alert.message}</p>
+                            </div>
+                            {alert.action && (
+                                <button
+                                    onClick={alert.action}
+                                    className={`ml-4 px-4 py-2 rounded-md text-sm font-medium
+                                        ${alert.severity === 'danger' ? 'bg-red-600 hover:bg-red-700 text-white' :
+                                        alert.severity === 'warning' ? 'bg-yellow-600 hover:bg-yellow-700 text-white' :
+                                        'bg-blue-600 hover:bg-blue-700 text-white'
+                                        } transition-colors`}
+                                >
+                                    View
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+
+// Reusable Vehicle Selector
+const VehicleSelector = ({ vehicles, selectedVehicle, setSelectedVehicle, label }) => {
+    return (
+        <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg shadow-sm">
+            <label htmlFor="vehicleSelect" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">{label}</label>
+            <select
+                id="vehicleSelect"
+                value={selectedVehicle?.id || ''}
+                onChange={(e) => setSelectedVehicle(vehicles.find(v => v.id === e.target.value) || null)}
+                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white p-2"
+            >
+                <option value="">All Vehicles</option>
+                {vehicles.map(v => (
+                    <option key={v.id} value={v.id}>{v.make} {v.model} ({v.licensePlate})</option>
+                ))}
+            </select>
+        </div>
+    );
+};
+
+// Reusable Confirmation Dialog
+const ConfirmDialog = ({ message, onConfirm, onCancel }) => {
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+                <h3 className="text-xl font-bold mb-4">Confirm Action</h3>
+                <p className="mb-6 text-gray-700 dark:text-gray-300">{message}</p>
+                <div className="flex justify-center space-x-4">
+                    <button
+                        onClick={onCancel}
+                        className="px-6 py-2 border border-gray-300 rounded-md shadow-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        Cancel
+                    </button>
+                    <button
+                        onClick={onConfirm}
+                        className="px-6 py-2 bg-red-600 text-white rounded-md shadow-md hover:bg-red-700 transition-colors">
+                        Confirm
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Footer Component
+const Footer = () => {
+    return (
+        <footer className="bg-gray-900 text-gray-300 py-8 mt-10 rounded-t-lg shadow-inner">
+            <div className="container mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-4 gap-8">
+                {/* Developer Info */}
+                <div className="flex flex-col items-center md:items-start text-center md:text-left">
+                    <h4 className="font-bold text-lg text-white mb-2">Developer</h4>
+                    <p className="text-sm">David Mbazza</p>
+                    <p className="text-sm">&copy; {new Date().getFullYear()} AutoPilot. All rights reserved.</p>
+                </div>
+
+                {/* Disclaimer */}
+                <div className="flex flex-col items-center md:items-start text-center md:text-left">
+                    <h4 className="font-bold text-lg text-white mb-2">Disclaimer</h4>
+                    <p className="text-sm">
+                        This application is for informational and tracking purposes only. Fuel consumption and maintenance estimates are approximations.
+                        Always consult a professional mechanic for vehicle service.
+                    </p>
+                </div>
+
+                {/* Useful Links */}
+                <div className="flex flex-col items-center md:items-start text-center md:text-left">
+                    <h4 className="font-bold text-lg text-white mb-2">Useful Links</h4>
+                    <ul className="space-y-1 text-sm">
+                        <li><a href="#" className="hover:text-blue-400 transition-colors">Privacy Policy (Placeholder)</a></li>
+                        <li><a href="#" className="hover:text-blue-400 transition-colors">Terms of Service (Placeholder)</a></li>
+                        <li><a href="#" className="hover:text-blue-400 transition-colors">FAQs (Placeholder)</a></li>
+                    </ul>
+                </div>
+
+                {/* Contact Us & About */}
+                <div className="flex flex-col items-center md:items-start text-center md:text-left">
+                    <h4 className="font-bold text-lg text-white mb-2">Contact & About</h4>
+                    <p className="text-sm">Email: info@autopilotapp.com (Placeholder)</p>
+                    <p className="text-sm">Phone: +255 7XX XXX XXX (Placeholder)</p>
+                    <p className="text-sm mt-2">
+                        AutoPilot helps you manage your vehicle's fuel and maintenance efficiently.
+                    </p>
+                </div>
+            </div>
+        </footer>
+    );
+};
+
+// Adverts and Sponsors Component
+const AdvertsAndSponsors = () => {
+    const adverts = [
+        { name: 'Vodacom', imageUrl: 'https://placehold.co/300x150/FF0000/FFFFFF?text=Vodacom+Ad', link: 'https://www.vodacom.co.tz/' },
+        { name: 'Airtel', imageUrl: 'https://placehold.co/300x150/0000FF/FFFFFF?text=Airtel+Ad', link: 'https://www.airtel.co.tz/' },
+    ];
+    const [currentAdvertIndex, setCurrentAdvertIndex] = useState(0);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setCurrentAdvertIndex((prevIndex) => (prevIndex + 1) % adverts.length);
+        }, 5000); // Change advert every 5 seconds
+
+        return () => clearInterval(interval); // Cleanup interval on component unmount
+    }, []);
+
+    const currentAdvert = adverts[currentAdvertIndex];
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md mt-8">
+            <h3 className="text-xl font-bold mb-4 text-center">Our Partners & Adverts</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                {/* Static Sponsor */}
+                <div className="flex flex-col items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded-lg shadow-inner">
+                    <h4 className="font-semibold text-lg mb-2">Proud Sponsor:</h4>
+                    <a href="https://totalenergies.co.tz/" target="_blank" rel="noopener noreferrer">
+                        <img
+                            src="https://placehold.co/200x100/FFD700/000000?text=Total+Energy+Logo"
+                            alt="Total Energy Logo"
+                            className="max-w-full h-auto rounded-md"
+                            onError={(e) => { e.target.onerror = null; e.target.src = 'https://placehold.co/200x100/FFD700/000000?text=Total+Energy'; }}
+                        />
+                    </a>
+                </div>
+
+                {/* Dynamic Advert */}
+                <div className="flex flex-col items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded-lg shadow-inner">
+                    <h4 className="font-semibold text-lg mb-2">Advertisement:</h4>
+                    <a href={currentAdvert.link} target="_blank" rel="noopener noreferrer">
+                        <img
+                            src={currentAdvert.imageUrl}
+                            alt={`${currentAdvert.name} Advert`}
+                            className="max-w-full h-auto rounded-md transition-opacity duration-1000 ease-in-out"
+                            onError={(e) => { e.target.onerror = null; e.target.src = `https://placehold.co/300x150/CCCCCC/333333?text=${currentAdvert.name}+Ad`; }}
+                        />
+                    </a>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+// Lucide Icons (Inline SVG for simplicity)
+const CarIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M19 17H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2Z" />
+        <circle cx="7" cy="17" r="2" />
+        <circle cx="17" cy="17" r="2" />
+    </svg>
+);
+
+const ToolsIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M3 21h18" />
+        <path d="M16 11V7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+        <path d="M19 17v4" />
+        <path d="M10 11V7a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v4" />
+        <path d="M7 17v4" />
+        <path d="M17 11h-2.5a.5.5 0 0 0-.5.5v3.5a.5.5 0 0 1-.5.5H14a.5.5 0 0 0 .5.5v3.5a.5.5 0 0 1-.5.5H12a.5.5 0 0 0-.5.5V21" />
+        <path d="M10 11H7.5a.5.5 0 0 0-.5.5v3.5a.5.5 0 0 1-.5.5H5a.5.5 0 0 0 .5.5V21" />
+    </svg>
+);
+
+const GasPumpIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M6 3v14" />
+        <path d="M18 17V9a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v8" />
+        <path d="M12 17h6" />
+        <path d="M7 21h10" />
+        <path d="M12 7V3" />
+    </svg>
+);
+
+const DollarSignIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <line x1="12" x2="12" y1="2" y2="22" />
+        <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+);
+
+const PlusIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M12 5v14" />
+        <path d="M5 12h14" />
+    </svg>
+);
+
+const ScanIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+        <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+        <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+        <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+    </svg>
+);
+
+const EditIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+);
+
+// New Icons for Dashboard
+const RoadIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M12 19V5" />
+        <path d="M12 21a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2z" />
+    </svg>
+);
+
+const FuelIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <line x1="3" x2="15" y1="22" y2="22" />
+        <path d="M18 22V8.5L12 2L6 8.5V22" />
+        <path d="M12 22V10" />
+    </svg>
+);
+
+const MapPinIcon = (props) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+        <path d="M12 12V2c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v10c0 1.1-.9 2-2 2h-4c-1.1 0-2-.9-2-2z" />
+        <path d="M12 12c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h4c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2z" />
+        <path d="M12 12V2c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v10c0 1.1-.9 2-2 2h-4c-1.1 0-2-.9-2-2z" />
+        <path d="M12 12c-1.1 0-2 .9-2 2v4c0 1.1.9 2 2 2h4c1.1 0 2-.9 2-2v-4c0-1.1-.9-2-2-2z" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+);
+
+
+// Tailwind CSS setup (included directly for Canvas environment)
+// This script will be loaded by the Canvas environment.
+// <script src="https://cdn.tailwindcss.com"></script>
+// <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+// <style>
+//   body { font-family: 'Inter', sans-serif; }
+// </style>
+
+export default App;
